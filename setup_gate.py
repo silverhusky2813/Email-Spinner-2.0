@@ -12,6 +12,7 @@ Once set up, this is a no-op (one cheap cached check per session).
 """
 
 import streamlit as st
+from sheet_cache import SheetCache
 
 
 @st.cache_data(ttl=300)
@@ -74,7 +75,7 @@ def ensure_schema_ready():
             except Exception as e:
                 st.error(f"Setup failed: {type(e).__name__}: {e}")
                 st.stop()
-        st.cache_data.clear()
+        SheetCache.invalidate_all()
         st.success("✓ Setup complete! Reloading...")
         st.rerun()
 

@@ -27,6 +27,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import load_tab
 
 from stage1_dedup import get_gspread_client
 from stage1_validation import normalize_email
@@ -99,7 +100,6 @@ class SenderAccount:
 # ACCOUNT LOADING
 # ============================================================================
 
-@st.cache_data(ttl=30)
 def _load_sender_accounts_raw() -> list[dict]:
     """Load raw account rows. Cached 30s."""
     gc = get_gspread_client()
@@ -108,10 +108,9 @@ def _load_sender_accounts_raw() -> list[dict]:
         ws = sh.worksheet("sender_accounts")
     except gspread.WorksheetNotFound:
         return []
-    return ws.get_all_records()
+    return load_tab("sender_accounts")
 
 
-@st.cache_data(ttl=30)
 def _load_send_log() -> list[dict]:
     """Load send log rows. Cached 30s."""
     gc = get_gspread_client()
@@ -120,7 +119,7 @@ def _load_send_log() -> list[dict]:
         ws = sh.worksheet("send_log")
     except gspread.WorksheetNotFound:
         return []
-    return ws.get_all_records()
+    return load_tab("send_log")
 
 
 def _count_recent_sends(

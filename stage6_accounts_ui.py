@@ -21,6 +21,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import SheetCache, load_tab
 
 from stage1_dedup import get_gspread_client
 from stage6_enforcement import reactivate_account, run_health_check
@@ -32,7 +33,6 @@ from time_utils import format_age, format_for_display
 # DATA
 # ============================================================================
 
-@st.cache_data(ttl=30)
 def _load_accounts() -> list[dict]:
     gc = get_gspread_client()
     sh = gc.open_by_key(st.secrets["sheet_id"])
@@ -40,7 +40,7 @@ def _load_accounts() -> list[dict]:
         ws = sh.worksheet("sender_accounts")
     except gspread.WorksheetNotFound:
         return []
-    return ws.get_all_records()
+    return load_tab("sender_accounts")
 
 
 # ============================================================================
@@ -58,8 +58,8 @@ def render_accounts() -> Optional[str]:
     # ---- Action bar ----
     col1, col2, col3 = st.columns([2, 2, 2])
     with col1:
-        if st.button("🔄 Refresh", key="accounts_refresh"):
-            st.cache_data.clear()
+        if st.button("🔄 Refresh"):
+            SheetCache.invalidate("sender_accounts")
             st.rerun()
     with col2:
         run_check = st.button("🩺 Run health check (dry run)")
@@ -80,7 +80,7 @@ def render_accounts() -> Optional[str]:
                 )
             else:
                 st.success("✓ Health check complete — no accounts needed pausing.")
-            st.cache_data.clear()
+            SheetCache.invalidate("sender_accounts")
 
     # ---- Load accounts ----
     accounts = _load_accounts()
@@ -136,7 +136,7 @@ def render_accounts() -> Optional[str]:
                 if st.button(f"▶️ Reactivate {email}", key=f"react_{email}"):
                     if reactivate_account(email):
                         st.success(f"✓ Reactivated {email} (24h grace window started)")
-                        st.cache_data.clear()
+                        SheetCache.invalidate("sender_accounts")
                         st.rerun()
                     else:
                         st.error("Reactivation failed.")
@@ -198,13 +198,13 @@ already warm).
     st.divider()
     col_new, col_dash, col_analytics = st.columns([1, 1, 1])
     with col_new:
-        if st.button("🆕 New campaign", key="accounts_nav_new"):
+        if st.button("🆕 New campaign"):
             return "new_campaign"
     with col_dash:
-        if st.button("📊 Health dashboard", key="accounts_nav_dashboard"):
+        if st.button("📊 Health dashboard"):
             return "dashboard"
     with col_analytics:
-        if st.button("📈 Analytics", key="accounts_nav_analytics"):
+        if st.button("📈 Analytics"):
             return "analytics"
 
     return None

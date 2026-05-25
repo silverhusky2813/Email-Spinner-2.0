@@ -12,6 +12,9 @@ results: pausing accounts (is_active=FALSE + reason), logging health snapshots,
 and handling manual reactivation (sets reactivated_at for the grace window).
 
 The pure decision logic lives in stage6_health_score; this module does I/O.
+
+All reads via SheetCache. Writes call SheetCache.invalidate() on the affected
+tab only — never st.cache_data.clear().
 """
 
 from datetime import datetime, timezone
@@ -20,6 +23,7 @@ from typing import Optional
 import gspread
 import streamlit as st
 
+from sheet_cache import SheetCache, load_tab
 from stage1_dedup import get_gspread_client
 from stage1_validation import normalize_email
 from stage6_health_score import AccountHealth, assess_all_accounts
@@ -31,25 +35,13 @@ from time_utils import now_iso
 # ============================================================================
 
 def _load_accounts_raw() -> list[dict]:
-    """Fresh read of sender_accounts (no cache — enforcement needs current state)."""
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-    try:
-        ws = sh.worksheet("sender_accounts")
-    except gspread.WorksheetNotFound:
-        return []
-    return ws.get_all_records()
+    """Load sender_accounts via SheetCache (TTL=30s)."""
+    return load_tab("sender_accounts")
 
 
 def _load_emails() -> list[dict]:
-    """Fresh read of Emails for health computation."""
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-    try:
-        ws = sh.worksheet("Emails")
-    except gspread.WorksheetNotFound:
-        return []
-    return ws.get_all_records()
+    """Load Emails for health computation via SheetCache (TTL=60s)."""
+    return load_tab("Emails")
 
 
 # ============================================================================
@@ -85,7 +77,8 @@ def pause_account(from_account: str, reason: str) -> bool:
         if col in headers:
             ws.update_cell(row_num, headers.index(col) + 1, val)
 
-    st.cache_data.clear()
+    # Targeted: only sender_accounts changed
+    SheetCache.invalidate("sender_accounts")
     return True
 
 
@@ -116,7 +109,8 @@ def reactivate_account(from_account: str) -> bool:
         if col in headers:
             ws.update_cell(row_num, headers.index(col) + 1, val)
 
-    st.cache_data.clear()
+    # Targeted: only sender_accounts changed
+    SheetCache.invalidate("sender_accounts")
     return True
 
 
@@ -175,7 +169,6 @@ def run_health_check(enforce: bool = False) -> list[dict]:
             elif health.recommended_action in ("alert", "blocked_last_account"):
                 action_taken = "alerted"
 
-            # Record a snapshot for trend history
             log_snapshots.append([
                 now_iso(),
                 health.from_account,

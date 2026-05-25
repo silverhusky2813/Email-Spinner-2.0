@@ -17,6 +17,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import SheetCache, load_tab
 
 from stage1_dedup import get_gspread_client
 from time_utils import format_age, format_for_display, safe_parse_date
@@ -26,7 +27,6 @@ from time_utils import format_age, format_for_display, safe_parse_date
 # DATA LOAD
 # ============================================================================
 
-@st.cache_data(ttl=30)
 def load_queue_rows(
     status_filter: Optional[str] = None,
     campaign_id_filter: Optional[str] = None,
@@ -48,7 +48,7 @@ def load_queue_rows(
     except gspread.WorksheetNotFound:
         return []
 
-    records = ws.get_all_records()
+    records = load_tab("Emails")
 
     # Apply filters
     filtered = records
@@ -202,8 +202,8 @@ def render_queue_view() -> Optional[str]:
         limit = st.number_input("Limit", 10, 500, 100, label_visibility="collapsed")
 
     # ---- Refresh button ----
-    if st.button("🔄 Refresh", key="queue_refresh"):
-        st.cache_data.clear()
+    if st.button("🔄 Refresh"):
+        SheetCache.invalidate("Emails")
         st.rerun()
 
     # ---- Load data ----
@@ -247,7 +247,7 @@ def render_queue_view() -> Optional[str]:
     # ---- Navigation ----
     col_new, col_spacer = st.columns([1, 4])
     with col_new:
-        if st.button("🆕 New campaign", key="queue_nav_new"):
+        if st.button("🆕 New campaign"):
             return "new_campaign"
 
     return None

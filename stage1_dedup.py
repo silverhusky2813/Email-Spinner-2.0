@@ -8,7 +8,7 @@ Corrections applied from audit:
   - Case-insensitive matching (uses normalized brand/email)
   - Campaign-type-aware: FollowUp INVERTS the check (requires prior contact)
   - Cached gspread client (no re-auth on every call)
-  - Cached Sheet reads (60s TTL) for performance
+  - All Sheet reads go through SheetCache (per-tab TTL, targeted invalidation)
 """
 
 import base64
@@ -51,23 +51,35 @@ def get_gspread_client():
     return gspread.service_account_from_dict(creds_dict)
 
 
-@st.cache_data(ttl=60)
+# ============================================================================
+# TAB LOADERS — all reads go through SheetCache
+# ============================================================================
+
 def _load_emails_history() -> list[dict]:
     """
-    Load all rows from Emails tab. Cached for 60 seconds.
+    Load all rows from Emails tab via SheetCache (TTL=60s).
 
-    This is called by dedup checks — we tolerate slight staleness because:
+    We tolerate slight staleness because:
       - Users send a few emails per minute at most
-      - The cost of a stale cache (occasional false-negative dedup) is
-        much lower than the cost of re-loading 1000+ rows on every check
+      - A stale cache (occasional false-negative dedup) is far cheaper
+        than a 429 quota error from re-loading 1000+ rows every check
     """
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-    try:
-        ws = sh.worksheet("Emails")
-    except gspread.WorksheetNotFound:
-        return []
-    return ws.get_all_records()
+    from sheet_cache import load_tab
+    return load_tab("Emails")
+
+
+def _load_suppression_dict() -> dict[str, str]:
+    """
+    Load suppressed emails as {normalized_email: reason} via SheetCache (TTL=300s).
+
+    Returns a dict so reason lookup is O(1) with zero extra Sheet reads.
+    """
+    from sheet_cache import load_tab
+    records = load_tab("Suppression")
+    return {
+        normalize_email(r.get("recipient_email", "")): r.get("reason", "unknown")
+        for r in records
+    }
 
 
 # ============================================================================
@@ -235,38 +247,16 @@ def check_publisher_contact_history(
 
 
 # ============================================================================
-# SUPPRESSION LIST CHECK (Stage 7 foundation)
+# SUPPRESSION LIST CHECK
 # ============================================================================
-
-@st.cache_data(ttl=300)
-def _load_suppression_dict() -> dict[str, str]:
-    """
-    Load suppressed emails as {normalized_email: reason}. Cached 5 min.
-
-    Returns a dict instead of a set so reason lookup is O(1) with zero
-    extra Sheet reads — eliminates the second get_all_records() call that
-    was causing 429 quota errors.
-    """
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-    try:
-        ws = sh.worksheet("Suppression")
-    except gspread.WorksheetNotFound:
-        return {}
-    records = ws.get_all_records()
-    return {
-        normalize_email(r.get("recipient_email", "")): r.get("reason", "unknown")
-        for r in records
-    }
-
 
 def is_suppressed(email: str) -> tuple[bool, str | None]:
     """
     Check if email is on the suppression list.
     Returns (is_suppressed, reason_if_known).
 
-    One Sheet read per 5-minute window — reason is stored in the dict,
-    so no second get_all_records() call is needed.
+    One Sheet read per 5-minute window via SheetCache. Reason is stored
+    in the dict so no second get_all_records() call is ever needed.
     """
     normalized = normalize_email(email)
     suppression_dict = _load_suppression_dict()

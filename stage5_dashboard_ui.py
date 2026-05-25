@@ -22,6 +22,7 @@ Public API:
 from typing import Optional
 
 import streamlit as st
+from sheet_cache import SheetCache
 
 from stage5_health import (
     estimate_drain_time,
@@ -43,8 +44,9 @@ def render_dashboard() -> Optional[str]:
 
     col_refresh, col_spacer = st.columns([1, 4])
     with col_refresh:
-        if st.button("🔄 Refresh data", key="dash_refresh"):
-            st.cache_data.clear()
+        if st.button("🔄 Refresh data"):
+            SheetCache.invalidate("Emails")
+            SheetCache.invalidate("sender_accounts")
             st.rerun()
 
     # ---- Load all metrics (cached) ----
@@ -206,10 +208,10 @@ def render_dashboard() -> Optional[str]:
     # ---- Navigation ----
     col_new, col_queue, _ = st.columns([1, 1, 3])
     with col_new:
-        if st.button("🆕 New campaign", key="dash_nav_new"):
+        if st.button("🆕 New campaign"):
             return "new_campaign"
     with col_queue:
-        if st.button("📋 Full queue", key="dash_nav_queue"):
+        if st.button("📋 Full queue"):
             return "view_queue"
 
     return None

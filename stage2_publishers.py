@@ -27,6 +27,7 @@ from typing import Optional
 import gspread
 import streamlit as st
 
+from sheet_cache import SheetCache, load_tab
 from stage1_dedup import get_gspread_client
 from stage1_validation import normalize_email
 from stage2_templates import VARIABLE_FALLBACKS
@@ -41,21 +42,12 @@ PUBLISHER_VARIABLES = ["FIRST_NAME", "LAST_NAME", "PUBLISHER_NAME"]
 # CACHED READS
 # ============================================================================
 
-@st.cache_data(ttl=30)
 def _load_all_publishers() -> dict[str, dict]:
     """
     Load all publishers into a dict keyed by normalized email.
-    Cached 30s. Returns empty dict if tab doesn't exist.
+    Reads via SheetCache (TTL=30s). Returns empty dict if tab doesn't exist.
     """
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-
-    try:
-        ws = sh.worksheet("Publishers")
-    except gspread.WorksheetNotFound:
-        return {}
-
-    records = ws.get_all_records()
+    records = load_tab("Publishers")
 
     publishers_by_email = {}
     for r in records:
@@ -191,13 +183,13 @@ def upsert_publisher(
         ws.update(f"A{row_num}:{last_col_letter}{row_num}", [row_values])
 
         # Clear the cache so next read picks up the update
-        st.cache_data.clear()
+        SheetCache.invalidate("Publishers")
         return "updated"
     else:
         # INSERT
         row_values = [new_row.get(col, "") for col in PUBLISHERS_SCHEMA]
         ws.append_row(row_values)
-        st.cache_data.clear()
+        SheetCache.invalidate("Publishers")
         return "created"
 
 

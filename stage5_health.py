@@ -18,6 +18,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import load_tab
 
 from stage1_dedup import get_gspread_client
 from stage5_priority import sort_rows_by_priority
@@ -82,7 +83,6 @@ class AccountUsage:
 # DATA LOADING
 # ============================================================================
 
-@st.cache_data(ttl=60)
 def _load_emails() -> list[dict]:
     """Load all Emails rows. Cached 60s."""
     gc = get_gspread_client()
@@ -91,7 +91,7 @@ def _load_emails() -> list[dict]:
         ws = sh.worksheet("Emails")
     except gspread.WorksheetNotFound:
         return []
-    return ws.get_all_records()
+    return load_tab("Emails")
 
 
 # ============================================================================

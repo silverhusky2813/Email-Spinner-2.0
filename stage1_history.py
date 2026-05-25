@@ -8,13 +8,14 @@ Corrections applied from audit:
   - Graceful fallback when Campaigns tab doesn't exist yet (during migration)
   - No fake performance data — only shows what we actually have
   - Presets and history merged into one "load source" concept
+  - All Sheet reads via SheetCache — no naked get_all_records() calls
 """
 
 from datetime import date, datetime, timedelta
 
-import gspread
 import streamlit as st
 
+from sheet_cache import load_tab
 from stage1_dedup import get_gspread_client
 
 
@@ -22,34 +23,22 @@ from stage1_dedup import get_gspread_client
 # CAMPAIGN HISTORY
 # ============================================================================
 
-@st.cache_data(ttl=60)
 def load_campaign_history(num_recent: int = 10) -> list[dict]:
     """
-    Load most recent campaigns from the Campaigns tab.
+    Load most recent campaigns from the Campaigns tab (SheetCache TTL=60s).
 
     Returns empty list (not error) if the tab doesn't exist yet —
     this is expected before schema migration runs.
     """
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-
-    try:
-        ws = sh.worksheet("Campaigns")
-    except gspread.WorksheetNotFound:
-        return []
-
-    records = ws.get_all_records()
+    records = load_tab("Campaigns")
     if not records:
         return []
 
-    # Sort by created_at, most recent first
-    # Use empty string fallback so missing timestamps sort to the end
     sorted_records = sorted(
         records,
         key=lambda x: x.get("created_at", ""),
         reverse=True,
     )
-
     return sorted_records[:num_recent]
 
 
@@ -67,6 +56,9 @@ def get_brand_history_summary(brand: str) -> dict:
     Aggregate stats for a brand across all past campaigns.
     Returns ONLY data we actually have — no fake metrics.
 
+    Uses SheetCache so this never issues a raw Sheet read when
+    Campaigns data is already warm in cache.
+
     Returns:
         {
             "total_campaigns": int,
@@ -78,20 +70,7 @@ def get_brand_history_summary(brand: str) -> dict:
     from stage1_validation import normalize_brand
 
     brand_norm = normalize_brand(brand)
-
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-
-    try:
-        ws = sh.worksheet("Campaigns")
-        campaigns = ws.get_all_records()
-    except gspread.WorksheetNotFound:
-        return {
-            "total_campaigns": 0,
-            "last_sent_date": None,
-            "verticals_used": [],
-            "campaign_types_used": [],
-        }
+    campaigns = load_tab("Campaigns")   # uses cache — zero quota cost if warm
 
     matching = [
         c for c in campaigns
@@ -106,7 +85,6 @@ def get_brand_history_summary(brand: str) -> dict:
             "campaign_types_used": [],
         }
 
-    # Last sent
     sorted_matching = sorted(
         matching,
         key=lambda x: x.get("created_at", ""),
@@ -114,7 +92,6 @@ def get_brand_history_summary(brand: str) -> dict:
     )
     last_sent = sorted_matching[0].get("created_at", "")[:10]
 
-    # Unique verticals + types
     verticals = sorted({c.get("vertical", "") for c in matching if c.get("vertical")})
     types = sorted({c.get("campaign_type", "") for c in matching if c.get("campaign_type")})
 
@@ -130,18 +107,9 @@ def get_brand_history_summary(brand: str) -> dict:
 # PRESETS
 # ============================================================================
 
-@st.cache_data(ttl=300)
 def load_presets() -> list[dict]:
-    """Load all presets from the Presets tab. Cached 5 minutes."""
-    gc = get_gspread_client()
-    sh = gc.open_by_key(st.secrets["sheet_id"])
-
-    try:
-        ws = sh.worksheet("Presets")
-    except gspread.WorksheetNotFound:
-        return []
-
-    return ws.get_all_records()
+    """Load all presets from the Presets tab (SheetCache TTL=300s)."""
+    return load_tab("Presets")
 
 
 def apply_preset_dates(preset: dict, today: date = None) -> tuple[date, date]:
@@ -163,7 +131,6 @@ def apply_preset_dates(preset: dict, today: date = None) -> tuple[date, date]:
         start_str = preset.get("flight_start", "")
         end_str = preset.get("flight_end", "")
         if not start_str or not end_str:
-            # Fallback to relative if fixed dates missing
             strategy = "relative_to_today"
         else:
             try:

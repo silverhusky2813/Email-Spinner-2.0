@@ -20,6 +20,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import load_tab
 
 from stage1_dedup import get_gspread_client
 from stage1_validation import normalize_string
@@ -29,7 +30,6 @@ from stage1_validation import normalize_string
 # CACHED READS
 # ============================================================================
 
-@st.cache_data(ttl=300)
 def _load_all_cpm_rates() -> list[dict]:
     """Load all rows from cpm_rates tab. Cached 5 min (rates change rarely)."""
     gc = get_gspread_client()
@@ -40,7 +40,7 @@ def _load_all_cpm_rates() -> list[dict]:
     except gspread.WorksheetNotFound:
         return []
 
-    return ws.get_all_records()
+    return load_tab("cpm_rates")
 
 
 # ============================================================================

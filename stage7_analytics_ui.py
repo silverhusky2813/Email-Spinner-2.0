@@ -23,6 +23,7 @@ from typing import Optional
 
 import gspread
 import streamlit as st
+from sheet_cache import SheetCache, load_tab
 
 from stage1_dedup import get_gspread_client
 from stage7_engagement import (
@@ -40,7 +41,6 @@ from stage7_engagement import (
 # DATA LOAD
 # ============================================================================
 
-@st.cache_data(ttl=120)
 def _load_emails() -> list[dict]:
     """Load all Emails rows. Cached 2 min (analytics isn't real-time-critical)."""
     gc = get_gspread_client()
@@ -49,7 +49,7 @@ def _load_emails() -> list[dict]:
         ws = sh.worksheet("Emails")
     except gspread.WorksheetNotFound:
         return []
-    return ws.get_all_records()
+    return load_tab("Emails")
 
 
 # ============================================================================
@@ -66,8 +66,8 @@ def render_analytics() -> Optional[str]:
 
     col_refresh, _ = st.columns([1, 4])
     with col_refresh:
-        if st.button("🔄 Refresh data", key="analytics_refresh"):
-            st.cache_data.clear()
+        if st.button("🔄 Refresh data"):
+            SheetCache.invalidate("Emails")
             st.rerun()
 
     with st.spinner("Crunching engagement data..."):
@@ -83,7 +83,7 @@ def render_analytics() -> Optional[str]:
             "No sent emails yet. Once emails send and replies come in (the "
             "reply scan runs via Apps Script), analytics will appear here."
         )
-        if st.button("🆕 New campaign", key="analytics_empty_new"):
+        if st.button("🆕 New campaign"):
             return "new_campaign"
         return None
 
@@ -256,10 +256,10 @@ def render_analytics() -> Optional[str]:
     # ---- Navigation ----
     col_new, col_dash, _ = st.columns([1, 1, 3])
     with col_new:
-        if st.button("🆕 New campaign", key="analytics_nav_new"):
+        if st.button("🆕 New campaign"):
             return "new_campaign"
     with col_dash:
-        if st.button("📊 Health dashboard", key="analytics_nav_dashboard"):
+        if st.button("📊 Health dashboard"):
             return "dashboard"
 
     return None
