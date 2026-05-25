@@ -113,15 +113,14 @@ def _find_existing_email_row(idempotency_key: str) -> Optional[dict]:
 
 def check_suppression_fresh(recipient_email: str) -> CheckResult:
     """
-    Re-check suppression list with bypass cache.
+    Re-check suppression list with TTL-bounded freshness.
 
-    Solves audit error 3.7: between Stage 1 and Stage 3 the user might have
-    spent 10+ minutes working. The suppression list could have been updated
-    in that window. We re-read it FRESH here.
+    The suppression dict is cached for 5 minutes (TTL=300). This is fresh
+    enough to catch updates made between Stage 1 and Stage 3. We deliberately
+    do NOT call st.cache_data.clear() here — doing so before every check was
+    nuking the entire cache and forcing a Sheet re-read per check, causing
+    429 quota errors.
     """
-    # Bypass cache by clearing first
-    st.cache_data.clear()
-
     suppressed, reason = is_suppressed(recipient_email)
     if suppressed:
         return CheckResult(
@@ -148,15 +147,12 @@ def check_dedup_fresh(
     campaign_type: str,
 ) -> CheckResult:
     """
-    Re-check the dedup window. Possible scenarios where this matters:
+    Re-check the dedup window with TTL-bounded freshness (TTL=60s on Emails).
 
-    - User started Stage 1 before midnight, finished Stage 3 after midnight
-      (dedup window for a 30-day rule might now exclude a prior contact)
-    - Another teammate sent an email to the same recipient during the
-      Stage 1→3 gap
+    Does NOT call st.cache_data.clear() — see check_suppression_fresh for
+    the reasoning. The 60-second TTL on _load_emails_history is sufficient
+    to catch same-session duplicates.
     """
-    st.cache_data.clear()
-
     status, message, prior = check_publisher_contact_history(
         publisher_email=recipient_email,
         brand=brand,

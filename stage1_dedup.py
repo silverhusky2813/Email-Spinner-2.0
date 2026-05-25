@@ -76,14 +76,33 @@ def _load_emails_history() -> list[dict]:
 
 def safe_parse_date(date_str) -> datetime | None:
     """
-    Delegate to the canonical implementation in time_utils.
+    Handle multiple date formats from Sheets / Apps Script.
 
-    This used to live here, but Stage 3 introduced time_utils as the single
-    source of truth (and fixes the Apps Script TZ-annotation bug). Kept as a
-    re-export to avoid breaking older imports.
+    Apps Script writes timestamps via `new Date()`, which produces strings like:
+      "Mon Apr 22 2026 14:30:00 GMT-0700 (Pacific Daylight Time)"
+    Sheets may also store as ISO strings, serial numbers, etc.
+
+    Uses dateutil.parser as a fuzzy fallback. Returns None on failure.
     """
-    from time_utils import safe_parse_date as _impl
-    return _impl(date_str)
+    if date_str is None or date_str == "":
+        return None
+
+    # Already a datetime
+    if isinstance(date_str, datetime):
+        return date_str
+
+    # Excel-style serial number (days since 1899-12-30)
+    if isinstance(date_str, (int, float)):
+        try:
+            return datetime(1899, 12, 30) + timedelta(days=float(date_str))
+        except (ValueError, OverflowError):
+            return None
+
+    # String — try dateutil
+    try:
+        return date_parser.parse(str(date_str))
+    except (ValueError, TypeError, date_parser.ParserError):
+        return None
 
 
 # ============================================================================
@@ -220,38 +239,39 @@ def check_publisher_contact_history(
 # ============================================================================
 
 @st.cache_data(ttl=300)
-def _load_suppression_list() -> set[str]:
-    """Load suppressed emails (unsubscribed, bounced). Cached 5 min."""
+def _load_suppression_dict() -> dict[str, str]:
+    """
+    Load suppressed emails as {normalized_email: reason}. Cached 5 min.
+
+    Returns a dict instead of a set so reason lookup is O(1) with zero
+    extra Sheet reads — eliminates the second get_all_records() call that
+    was causing 429 quota errors.
+    """
     gc = get_gspread_client()
     sh = gc.open_by_key(st.secrets["sheet_id"])
     try:
         ws = sh.worksheet("Suppression")
     except gspread.WorksheetNotFound:
-        return set()
+        return {}
     records = ws.get_all_records()
-    return {normalize_email(r.get("recipient_email", "")) for r in records}
+    return {
+        normalize_email(r.get("recipient_email", "")): r.get("reason", "unknown")
+        for r in records
+    }
 
 
 def is_suppressed(email: str) -> tuple[bool, str | None]:
     """
     Check if email is on the suppression list.
     Returns (is_suppressed, reason_if_known).
+
+    One Sheet read per 5-minute window — reason is stored in the dict,
+    so no second get_all_records() call is needed.
     """
     normalized = normalize_email(email)
-    suppressed_set = _load_suppression_list()
+    suppression_dict = _load_suppression_dict()
 
-    if normalized in suppressed_set:
-        # Look up the reason
-        gc = get_gspread_client()
-        sh = gc.open_by_key(st.secrets["sheet_id"])
-        try:
-            ws = sh.worksheet("Suppression")
-            records = ws.get_all_records()
-            for r in records:
-                if normalize_email(r.get("recipient_email", "")) == normalized:
-                    return True, r.get("reason", "unknown")
-        except gspread.WorksheetNotFound:
-            pass
-        return True, "unknown"
+    if normalized in suppression_dict:
+        return True, suppression_dict[normalized]
 
     return False, None
