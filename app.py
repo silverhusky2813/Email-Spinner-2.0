@@ -37,6 +37,7 @@ from stage5_dashboard_ui import render_dashboard
 from stage6_accounts_ui import render_accounts
 from stage7_analytics_ui import render_analytics
 from setup_gate import ensure_schema_ready
+from sheet_cache import SheetCache
 
 
 # ============================================================================
@@ -148,6 +149,13 @@ def _render_sidebar():
             _go("accounts")
 
         st.divider()
+
+        # --- Admin ---
+        st.caption("**ADMIN**")
+        if st.button("⚙️ Maintenance", use_container_width=True):
+            _go("maintenance")
+
+        st.divider()
         st.caption("v1.0 · 7-stage pipeline")
 
 
@@ -232,8 +240,136 @@ def _route():
         elif action == "analytics":
             _go("analytics")
 
+    elif view == "maintenance":
+        _render_maintenance()
+
     else:
         # Unknown view — reset
+        _go("stage1")
+
+
+
+# ============================================================================
+# MAINTENANCE VIEW
+# ============================================================================
+
+def _render_maintenance():
+    """Admin panel: run migrations, clear cache, inspect Sheet schema."""
+    st.title("⚙️ Maintenance")
+    st.caption(
+        "Run schema migrations and cache operations without needing terminal access. "
+        "All migrations are idempotent — safe to run multiple times."
+    )
+
+    # ── Section 1: Schema migrations ──────────────────────────────────────
+    st.subheader("📐 Schema Migrations")
+    st.markdown(
+        "Runs the full migration chain in order (v0→v7). "
+        "Adds any missing tabs and columns — never deletes or shifts existing data."
+    )
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        verbose = st.checkbox("Show detailed output", value=True)
+    with col2:
+        run_btn = st.button("🚀 Run all migrations", type="primary", use_container_width=True)
+
+    if run_btn:
+        output_lines = []
+        import io, sys
+
+        # Capture stdout from the migration runner
+        old_stdout = sys.stdout
+        sys.stdout = buf = io.StringIO()
+        try:
+            from migrate_all import run_all_migrations
+            run_all_migrations(verbose=verbose)
+            output = buf.getvalue()
+            SheetCache.invalidate_all()
+            sys.stdout = old_stdout
+            st.success("✅ All migrations complete. Sheet cache cleared.")
+            if verbose and output:
+                st.code(output, language="text")
+        except Exception as e:
+            output = buf.getvalue()
+            sys.stdout = old_stdout
+            st.error(f"❌ Migration failed: {type(e).__name__}: {e}")
+            if output:
+                st.code(output, language="text")
+
+    st.divider()
+
+    # ── Section 2: Run individual migration ───────────────────────────────
+    st.subheader("🔧 Run Single Migration")
+
+    migration_map = {
+        "v0 — Emails base schema (CREATE tab + all headers)": "schema_setup_emails",
+        "v1 — Campaigns, Presets, Suppression tabs":          "schema_setup",
+        "v2 — Publishers, cpm_rates, variant columns":        "schema_setup_v2",
+        "v3 — HTML body, sender, idempotency, retries":       "schema_setup_v3",
+        "v4 — sender_accounts, send_log, priority":           "schema_setup_v4",
+        "v5 — Reply tracking, reply_log, thread_id":          "schema_setup_v5",
+        "v6 — Warm-up, pause columns, health log":            "schema_setup_v6",
+        "v7 — recipient_email on Campaigns (bugfix)":         "schema_setup_v7",
+    }
+
+    selected = st.selectbox("Select migration to run:", list(migration_map.keys()))
+    if st.button("▶️ Run selected migration", use_container_width=False):
+        module_name = migration_map[selected]
+        import io, sys, importlib
+        old_stdout = sys.stdout
+        sys.stdout = buf = io.StringIO()
+        try:
+            mod = importlib.import_module(module_name)
+            # Each module exposes either run_migration, run_migration_vN, or run_emails_migration
+            fn = getattr(mod, "run_migration", None) or \
+                 getattr(mod, "run_emails_migration", None) or \
+                 next((getattr(mod, a) for a in dir(mod) if a.startswith("run_migration")), None)
+            if fn:
+                fn(verbose=True)
+                output = buf.getvalue()
+                SheetCache.invalidate_all()
+                sys.stdout = old_stdout
+                st.success(f"✅ {selected.split('—')[0].strip()} complete.")
+                if output:
+                    st.code(output, language="text")
+            else:
+                sys.stdout = old_stdout
+                st.error(f"No run function found in {module_name}")
+        except Exception as e:
+            output = buf.getvalue()
+            sys.stdout = old_stdout
+            st.error(f"❌ {type(e).__name__}: {e}")
+            if output:
+                st.code(output, language="text")
+
+    st.divider()
+
+    # ── Section 3: Cache management ────────────────────────────────────────
+    st.subheader("🗄️ Cache Management")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🧹 Clear all cached Sheet data", use_container_width=True):
+            SheetCache.invalidate_all()
+            st.success("Cache cleared — next read will fetch fresh from Sheets.")
+    with col2:
+        # Show current cache state
+        cache_keys = [k for k in st.session_state.keys() if k.startswith("__sc_")]
+        if cache_keys:
+            import time
+            ages = []
+            for k in cache_keys:
+                tab = k.replace("__sc_", "")
+                entry = st.session_state[k]
+                age = int(time.time() - entry["ts"])
+                ages.append(f"**{tab}**: {age}s old ({len(entry['data'])} rows)")
+            st.caption("Cached tabs:\n" + "\n".join(ages))
+        else:
+            st.caption("No tabs currently cached.")
+
+    st.divider()
+    if st.button("← Back to campaign setup"):
         _go("stage1")
 
 
