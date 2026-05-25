@@ -369,6 +369,49 @@ def _render_maintenance():
             st.caption("No tabs currently cached.")
 
     st.divider()
+
+    # ── Section 4: Orphaned row cleanup ───────────────────────────────────
+    st.subheader("🧹 Clean Up Orphaned Email Rows")
+    st.markdown(
+        "Removes rows in the Emails tab that have **no status and no subject** "
+        "(written by interrupted sessions before the header row existed). "
+        "Rows with a real status (`Queued`, `Sent`, `Failed`) are never touched."
+    )
+
+    if st.button("🗑️ Delete orphaned rows", use_container_width=False):
+        import io, sys
+        old_stdout = sys.stdout
+        sys.stdout = buf = io.StringIO()
+        try:
+            from schema_setup import get_gspread_client, get_sheet_id
+            gc = get_gspread_client()
+            sh = gc.open_by_key(get_sheet_id())
+            ws = sh.worksheet("Emails")
+            rows = ws.get_all_records()   # reads from row 2 downwards (after headers)
+
+            # Identify rows to delete: status is empty AND subject is empty
+            VALID_STATUSES = {"queued", "sending", "sent", "delivered", "failed", "bounced"}
+            to_delete = []
+            for i, row in enumerate(rows, start=2):   # row index 1-based, data starts at 2
+                status = str(row.get("status", "")).strip().lower()
+                subject = str(row.get("subject", "")).strip()
+                if status not in VALID_STATUSES and not subject:
+                    to_delete.append(i)
+
+            sys.stdout = old_stdout
+            if not to_delete:
+                st.info("No orphaned rows found — the tab is clean.")
+            else:
+                # Delete in REVERSE order so row indices don't shift
+                for row_num in reversed(to_delete):
+                    ws.delete_rows(row_num)
+                SheetCache.invalidate("Emails")
+                st.success(f"✅ Deleted {len(to_delete)} orphaned row(s): {to_delete}")
+        except Exception as e:
+            sys.stdout = old_stdout
+            st.error(f"❌ {type(e).__name__}: {e}")
+
+    st.divider()
     if st.button("← Back to campaign setup"):
         _go("stage1")
 
