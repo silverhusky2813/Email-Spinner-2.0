@@ -12,6 +12,7 @@ Or from inside Streamlit (one-time):
   run_all_migrations()
 
 Order matters — each migration builds on the previous:
+  v0 (emails) → Emails tab with complete base schema (all columns)
   v1 (base)  → Campaigns, Presets, Suppression tabs; campaign_id on Emails
   v2         → Publishers, cpm_rates tabs; target_geo + variant columns
   v3         → html_body, from_account, idempotency_key, retry columns
@@ -33,13 +34,13 @@ def run_all_migrations(verbose: bool = True):
         print("=" * 64)
 
     steps = [
+        ("Emails tab base schema (all columns)", _run_emails),
         ("Base schema (Campaigns, Presets, Suppression)", _run_v1),
         ("Stage 2 (Publishers, cpm_rates, variant tracking)", _run_v2),
         ("Stage 3 (HTML body, sender, idempotency, retries)", _run_v3),
         ("Stage 5 (sender_accounts, send_log, priority)", _run_v4),
         ("Stage 7 (reply tracking, reply_log, watermark)", _run_v5),
         ("Stage 6 (warm-up, pause tracking, health log)", _run_v6),
-        ("BUGFIX (recipient_email on Campaigns + backfill)", _run_v7),
     ]
 
     for i, (label, fn) in enumerate(steps, 1):
@@ -60,6 +61,10 @@ def run_all_migrations(verbose: bool = True):
 
 
 # Each wrapper imports lazily so a failure in one module doesn't block others
+def _run_emails():
+    from schema_setup_emails import run_emails_migration
+    run_emails_migration(verbose=True)
+
 def _run_v1():
     from schema_setup import run_migration
     run_migration(verbose=True)
@@ -83,10 +88,6 @@ def _run_v5():
 def _run_v6():
     from schema_setup_v6 import run_migration_v6
     run_migration_v6(verbose=True)
-
-def _run_v7():
-    from schema_setup_v7 import run_migration_v7
-    run_migration_v7(verbose=True)
 
 
 if __name__ == "__main__":
