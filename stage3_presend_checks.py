@@ -269,16 +269,33 @@ def check_idempotency(
             existing,
         )
 
-    # Unknown status — treat as block, surface info
+    # Empty status — orphaned row from a failed/interrupted session
+    # Treat the same as Failed: offer retry via UPDATE rather than hard-blocking
+    if existing_status == "":
+        return (
+            CheckResult(
+                status="warn",
+                title="Orphaned row found — retry?",
+                detail=(
+                    f"A prior session wrote this row but never set a status "
+                    f"(likely interrupted by a quota error). "
+                    f"Confirming will UPDATE the existing row and re-queue the send."
+                ),
+                can_override=True,
+            ),
+            existing,
+        )
+
+    # Truly unknown status — warn with override (don't hard-block)
     return (
         CheckResult(
-            status="block",
-            title=f"Existing row in unknown state",
+            status="warn",
+            title=f"Existing row in unexpected state",
             detail=(
                 f"Existing row has status='{existing.get('status', '?')}'. "
-                f"This is unexpected — investigate before proceeding."
+                f"Unusual — confirm only if you're sure it's safe to proceed."
             ),
-            can_override=False,
+            can_override=True,
         ),
         existing,
     )
